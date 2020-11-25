@@ -32,13 +32,15 @@ class image_converter:
     self.joint2_trajectory_pub = rospy.Publisher("joint2_trajectory",Float64, queue_size=10)
     self.joint3_trajectory_pub = rospy.Publisher("joint3_trajectory",Float64, queue_size=10)
     self.joint4_trajectory_pub = rospy.Publisher("joint4_trajectory",Float64, queue_size=10)
+    # initialize a publisher to send robot end-effector position
+    self.end_effector_pub = rospy.Publisher("end_effector",Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
     self.bridge = CvBridge()
     # initialize subscribers to receive messages from topics
     self.image_sub1 = message_filters.Subscriber("/camera1/robot/image_raw",Image)
     self.image_sub2 = message_filters.Subscriber("/camera2/robot/image_raw",Image)
     self.ts = message_filters.TimeSynchronizer([self.image_sub1, self.image_sub2], 10)
-    self.ts.registerCallback(self.callback)
+    self.ts.registerCallback(self.callback2)
     self.initial_time = rospy.get_time()
   
   def get_joint_trajectories(self):
@@ -62,14 +64,6 @@ class image_converter:
     self.joint4_trajectory = Float64()
     self.joint4_trajectory.data = trajectories[3]
     # send control commands to joints
-    self.joint1 = Float64()
-    self.joint1.data = trajectories[0] 
-    self.joint2 = Float64()
-    self.joint2.data = trajectories[1]
-    self.joint3 = Float64()
-    self.joint3.data = trajectories[2]
-    self.joint4 = Float64()
-    self.joint4.data = trajectories[3]
     try:
       self.joint1_trajectory_pub.publish(self.joint1_trajectory)
       self.joint2_trajectory_pub.publish(self.joint2_trajectory)
@@ -94,6 +88,44 @@ class image_converter:
        self.joints_pub.publish(self.joints)
     except CvBridgeError as e:
       print(e)
+  
+  def callback2(self,image1,image2):
+    a = np.pi/180.0 # conversion factor
+    angles = a * np.array([130,65,65,65])
+    self.joint1 = Float64()
+    self.joint1.data = angles[0] 
+    self.joint2 = Float64()
+    self.joint2.data = angles[1]
+    self.joint3 = Float64()
+    self.joint3.data = angles[2]
+    self.joint4 = Float64()
+    self.joint4.data = angles[3]
+    # issue commands to robot
+    try:
+      self.robot_joint1_pub.publish(self.joint1)
+      self.robot_joint2_pub.publish(self.joint2)
+      self.robot_joint3_pub.publish(self.joint3)
+      self.robot_joint4_pub.publish(self.joint4)
+    except CvBridgeError as e:
+      print(e)  
+    # Receive the images
+    try:
+      self.cv_image1 = self.bridge.imgmsg_to_cv2(image1, "bgr8")
+      self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
+    except CvBridgeError as e:
+      print(e)
+    _, _, red1 = self.get_2d_blob_coords(self.cv_image1, self.cv_image2, 1)
+    _, _, red2 = self.get_2d_blob_coords(self.cv_image1, self.cv_image2, 2)
+    end_effector_coordinates = self.get_3d_coords(red1, red2)
+    self.end_effector = Float64MultiArray()
+    self.end_effector.data = end_effector_coordinates
+    try:
+      self.end_effector_pub.publish(self.end_effector)
+    except CvBridgeError as e:
+      print(e)
+  
+  def forward_kinematics(self,image1,image2):
+    pass
              
   def detect_red(self,image):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
