@@ -34,13 +34,15 @@ class image_converter:
     self.joint4_trajectory_pub = rospy.Publisher("joint4_trajectory",Float64, queue_size=10)
     # initialize a publisher to send robot end-effector position
     self.end_effector_pub = rospy.Publisher("end_effector",Float64MultiArray, queue_size=10)
+    # initialize a publisher to send sphere position
+    self.sphere_pub = rospy.Publisher("sphere_pos",Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
     self.bridge = CvBridge()
-    # initialize subscribers to receive messages from topics
+    # initialize subscribers to receive images from cameras
     self.image_sub1 = message_filters.Subscriber("/camera1/robot/image_raw",Image)
     self.image_sub2 = message_filters.Subscriber("/camera2/robot/image_raw",Image)
     self.ts = message_filters.TimeSynchronizer([self.image_sub1, self.image_sub2], 10)
-    self.ts.registerCallback(self.callback2)
+    self.ts.registerCallback(self.callback)
     self.initial_time = rospy.get_time()
   
   def get_joint_trajectories(self):
@@ -51,8 +53,24 @@ class image_converter:
     joint3 = float((np.pi/2) * np.sin((np.pi/18)*curr_time))
     joint4 = float((np.pi/2) * np.sin((np.pi/20)*curr_time))
     return np.array([joint1, joint2, joint3, joint4])
-      
+  
+  # publishes joint angles
   def callback(self,image1,image2):
+    # Receive the images
+    try:
+      self.cv_image1 = self.bridge.imgmsg_to_cv2(image1, "bgr8")
+      self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
+    except CvBridgeError as e:
+      print(e)
+    self.joints = Float64MultiArray()
+    self.joints.data = self.detect_joint_angles(self.cv_image1, self.cv_image2)
+    try:
+      self.joints_pub.publish(self.joints)
+    except CvBridgeError as e:
+      print(e)
+      
+  # publishes joint states as joint angles follow various trajectories    
+  def callback2(self,image1,image2):
     # get the desired trajectories
     trajectories = self.get_joint_trajectories()
     self.joint1_trajectory = Float64()
@@ -89,7 +107,24 @@ class image_converter:
     except CvBridgeError as e:
       print(e)
   
-  def callback2(self,image1,image2):
+  # publishes sphere position
+  def callback3(self,image1,image2):
+    # Receive the images
+    try:
+      self.cv_image1 = self.bridge.imgmsg_to_cv2(image1, "bgr8")
+      self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
+    except CvBridgeError as e:
+      print(e)
+    sphere_coordinates = self.get_sphere_coords(self.cv_image1, self.cv_image2)
+    self.sphere = Float64MultiArray()
+    self.sphere.data = sphere_coordinates
+    try:
+      self.sphere_pub.publish(self.sphere)
+    except CvBridgeError as e:
+      print(e)
+      
+  # publishes the robot end-effector position upon rotation of robot joint angles
+  def callback4(self,image1,image2):
     a = np.pi/180.0 # conversion factor
     angles = a * np.array([130,65,65,65])
     self.joint1 = Float64()
@@ -187,6 +222,8 @@ class image_converter:
         approx = cv2.approxPolyDP(cnt, 0.01 * cv2.arcLength(cnt, True), True)
         l = len(approx)
         M = cv2.moments(cnt)
+        if M["m00"] == 0:
+          return np.array([0,0]) # sphere can't be detected
         center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
         #cv2.circle(img, center, 2, (255, 0, 0), -1)
         shapes[i] = np.array([l, center[0], center[1]])
@@ -226,7 +263,13 @@ class image_converter:
     a1 = 2.5/np.sqrt(np.sum((yellowPos - bluePos)**2))
     a2 = 3.5/np.sqrt(np.sum((bluePos - greenPos)**2))
     a3 = 3/np.sqrt(np.sum((greenPos - redPos)**2))
-    return a1, a2, a3
+    return a1, a2, a3  
+  
+  def pixel2meter2(self,image1,image2):
+    bluePos = self.get_3d_coords(self.detect_blue(image1), self.detect_blue(image2))
+    greenPos = self.get_3d_coords(self.detect_green(image1), self.detect_green(image2))
+    dist = np.sqrt(np.sum((bluePos - greenPos)**2))
+    return 3.5/dist
   
   def get_2d_blob_coords(self,image1,image2,num):
     if num == 1:
@@ -246,54 +289,51 @@ class image_converter:
     return blueVec, greenVec, redVec
 
   def get_joint_1(self,image1,image2):
-    blue1, _, _ = self.get_2d_blob_coords(image1, image2, 1)
-    blue2, _, _ = self.get_2d_blob_coords(image1, image2, 2)
-    x, y, z = self.get_3d_coords(blue1, blue2)
-    adj = np.sqrt(2.5**2 - z**2)
-    theta = np.arctan2(z, adj)
-    return theta
-  
+    pass
+
   def get_joint_2(self,image1,image2):
     blue1, green1, _ = self.get_2d_blob_coords(image1, image2, 1)
     blue2, green2, _ = self.get_2d_blob_coords(image1, image2, 2)
-    Xb, Yb, Zb = self.get_3d_coords(blue1, blue2)
-    Xg, Yg, Zg = self.get_3d_coords(green1, green2)
-    greenVec = np.array([Xg-Xb, Yg-Yb, Zg-Zb])
-    greenMod = np.linalg.norm(greenVec, 2)
-    blueVec = np.array([Xb, Yb, Zb])
-    blueMod = np.linalg.norm(blueVec, 2)
-    dot_p = np.inner(greenVec, blueVec)
-    theta = np.arccos((dot_p / (greenMod * blueMod)))
-    return theta
-
+    _, Yb, Zb = self.get_3d_coords(blue1, blue2)
+    _, Yg, Zg = self.get_3d_coords(green1, green2)
+    Y, Z = Yg-Yb, Zg-Zb
+    return np.arctan2(-Y, Z)
+  
+  def get_joint_3(self,image1,image2):
+    blue1, green1, _ = self.get_2d_blob_coords(image1, image2, 1)
+    blue2, green2, _ = self.get_2d_blob_coords(image1, image2, 2)
+    Xb, _, _ = self.get_3d_coords(blue1, blue2)
+    Xg, _, _ = self.get_3d_coords(green1, green2)
+    X = Xg-Xb
+    return np.arcsin((X/3.5))
+    
   def get_joint_4(self,image1,image2):
-    blue1, green1, red1 = self.get_2d_blob_coords(image1, image2, 1)
-    blue2, green2, red2 = self.get_2d_blob_coords(image1, image2, 2)
-    Xb,Yb,Zb = self.get_3d_coords(blue1, blue2)
-    Xg,Yg,Zg = self.get_3d_coords(green1, green2)
-    Xr,Yr,Zr = self.get_3d_coords(red1, red2)
-    greenVec = np.array([Xg-Xb, Yg-Yb, Zg-Zb])
-    greenMod = np.linalg.norm(greenVec,2)
-    redVec = np.array([Xr-Xg, Yr-Yg, Zr-Zg])
-    redMod = np.linalg.norm(redVec, 2)
-    dot_p = np.inner(greenVec, redVec)
-    theta = np.arccos((dot_p/(greenMod * redMod)))
-    return theta
+    beta = self.get_joint_2(image1,image2)
+    gamma = self.get_joint_3(image1,image2)
+    a1 = -3*np.sin(beta)*np.cos(gamma)
+    a2 = -3*np.cos(beta)
+    b1 = 3*np.cos(beta)*np.cos(gamma)
+    b2 = -3*np.sin(beta)
+    blue1, _, red1 = self.get_2d_blob_coords(image1, image2, 1)
+    blue2, _, red2 = self.get_2d_blob_coords(image1, image2, 2)
+    _, Yb, Zb = self.get_3d_coords(blue1, blue2)
+    _, Yr, Zr = self.get_3d_coords(red1, red2)
+    c1 = (Yr-Yb) + 3.5*np.sin(beta)*np.cos(gamma)
+    c2 = (Zr-Zb) - 3.5*np.cos(beta)*np.cos(gamma)
+    A = np.array([[a1,a2],[b1,b2]])
+    b = np.array([c1,c2]).reshape((2,1))
+    x = np.linalg.inv(A) * b
+    return np.arctan2(x[1],x[0])
 
   def detect_joint_angles(self,image1,image2):
-    joint1 = self.get_joint_1(image1,image2)
+    joint1 = 0
     joint2 = self.get_joint_2(image1,image2)
-    joint3 = 0
+    joint3 = self.get_joint_3(image1,image2)
     joint4 = self.get_joint_4(image1,image2)
     return np.array([joint1, joint2, joint3, joint4])
-        
-  def pixel2meter2(self,image1,image2):
-    bluePos = self.get_3d_coords(self.detect_blue(image1), self.detect_blue(image2))
-    greenPos = self.get_3d_coords(self.detect_green(image1), self.detect_green(image2))
-    dist = np.sqrt(np.sum((bluePos - greenPos)**2))
-    return 3.5/dist
 
-  def get_sphere_coords(self,image1,image2):
+  # get sphere coordinates relative to robot base frame
+  def get_sphere_coords_RBF(self,image1,image2):
     a = self.pixel2meter2(image1, image2)
     basePos = self.get_3d_coords(self.detect_baseframe(image1), self.detect_baseframe(image2))
     spherePos = self.get_3d_coords(self.detect_sphere(image1), self.detect_sphere(image2))
@@ -301,7 +341,19 @@ class image_converter:
     Y = spherePos[1] - basePos[1]
     Z = basePos[2] - spherePos[2]
     return a * np.array([X,Y,Z])
-    	    
+  
+  # get sphere coordinates relative to yellow sphere
+  def get_sphere_coords(self,image1,image2):
+    a = self.pixel2meter2(image1,image2)
+    yellowPos = self.get_3d_coords(self.detect_yellow(image1), self.detect_yellow(image2))
+    if np.array_equal(np.array([0,0]), self.detect_sphere(image1)) or np.array_equal(np.array([0,0]), self.detect_sphere(image2)): # if sphere can't be detected in one of the images
+      return np.array([0,0,0])
+    spherePos = self.get_3d_coords(self.detect_sphere(image1), self.detect_sphere(image2))
+    X = spherePos[0] - yellowPos[0]
+    Y = spherePos[1] - yellowPos[1]
+    Z = yellowPos[2] - spherePos[2]
+    return a * np.array([X,Y,Z])
+      	    
 # call the class
 def main(args):
   ic = image_converter()
