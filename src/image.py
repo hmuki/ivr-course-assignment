@@ -42,13 +42,17 @@ class image_converter:
     self.image_sub1 = message_filters.Subscriber("/camera1/robot/image_raw",Image)
     self.image_sub2 = message_filters.Subscriber("/camera2/robot/image_raw",Image)
     self.ts = message_filters.TimeSynchronizer([self.image_sub1, self.image_sub2], 10)
-    self.ts.registerCallback(self.callback)
+    self.ts.registerCallback(self.callback5)
     self.initial_time = rospy.get_time()
+    # initialize error
+    self.time_previous_step = np.array([rospy.get_time()], dtype='float64')
+    # initialize error and derivative of error for trajectory tracking  
+    self.error = np.array([0.0,0.0,0.0], dtype='float64')  
+    self.error_d = np.array([0.0,0.0,0.0], dtype='float64')
   
   def get_joint_trajectories(self):
     curr_time = np.array([rospy.get_time() - self.initial_time])
-    #joint1 = float(0)
-    joint1 = float((np.pi) * np.sin((np.pi/15)*curr_time))
+    joint1 = 0
     joint2 = float((np.pi/2) * np.sin((np.pi/15)*curr_time))
     joint3 = float((np.pi/2) * np.sin((np.pi/18)*curr_time))
     joint4 = float((np.pi/2) * np.sin((np.pi/20)*curr_time))
@@ -149,16 +153,44 @@ class image_converter:
       self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
     except CvBridgeError as e:
       print(e)
-    _, _, red1 = self.get_2d_blob_coords(self.cv_image1, self.cv_image2, 1)
-    _, _, red2 = self.get_2d_blob_coords(self.cv_image1, self.cv_image2, 2)
-    end_effector_coordinates = self.get_3d_coords(red1, red2)
     self.end_effector = Float64MultiArray()
-    self.end_effector.data = end_effector_coordinates
+    self.end_effector.data = self.detect_end_effector(self.cv_image1,self.cv_image2)
     try:
       self.end_effector_pub.publish(self.end_effector)
     except CvBridgeError as e:
       print(e)
   
+  # uses inverse kinematics to move robot towards target
+  def callback5(self,image1,image2):
+    # Receive the images
+    try:
+      self.cv_image1 = self.bridge.imgmsg_to_cv2(image1, "bgr8")
+      self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
+    except CvBridgeError as e:
+      print(e)
+    # send control commands to joints
+    q_d = self.control_closed(self.cv_image1,self.cv_image2)
+    self.joint1 = Float64()
+    self.joint1.data = q_d[0]
+    self.joint2 = Float64()
+    self.joint2.data = q_d[1]
+    self.joint3 = Float64()
+    self.joint3.data = q_d[2] 
+    self.joint4 = Float64()
+    self.joint4.data = q_d[3]
+    # publish the trajectories
+    x_d = self.get_sphere_coords(self.cv_image1,self.cv_image2)
+    self.trajectory_desired = Float64MultiArray()
+    self.trajectory_desired.data = x_d
+    x_e = self.detect_end_effector(self.cv_image1,self.cv_image2)
+    self.end_effector = Float64MultiArray()
+    self.end_effector.data = x_e
+    try:
+      self.end_effector_pub.publish(self.end_effector)
+      self.sphere_pub.publish(self.trajectory_desired)
+    except CvBridgeError as e:
+      print(e)
+    
   def forward_kinematics(self,image1,image2):
     pass
              
@@ -321,8 +353,10 @@ class image_converter:
     c1 = (Yr-Yb) + 3.5*np.sin(beta)*np.cos(gamma)
     c2 = (Zr-Zb) - 3.5*np.cos(beta)*np.cos(gamma)
     A = np.array([[a1,a2],[b1,b2]])
-    b = np.array([c1,c2]).reshape((2,1))
-    x = np.linalg.inv(A) * b
+    b = np.array([c1,c2])
+    if np.linalg.det(A) == 0:
+      return 0
+    x = (np.linalg.inv(A)).dot(b)
     return np.arctan2(x[1],x[0])
 
   def detect_joint_angles(self,image1,image2):
@@ -331,7 +365,12 @@ class image_converter:
     joint3 = self.get_joint_3(image1,image2)
     joint4 = self.get_joint_4(image1,image2)
     return np.array([joint1, joint2, joint3, joint4])
-
+  
+  def detect_end_effector(self,image1,image2):
+    _, _, red1 = self.get_2d_blob_coords(image1, image2, 1)
+    _, _, red2 = self.get_2d_blob_coords(image1, image2, 2)
+    return self.get_3d_coords(red1, red2)
+  
   # get sphere coordinates relative to robot base frame
   def get_sphere_coords_RBF(self,image1,image2):
     a = self.pixel2meter2(image1, image2)
@@ -353,7 +392,51 @@ class image_converter:
     Y = spherePos[1] - yellowPos[1]
     Z = yellowPos[2] - spherePos[2]
     return a * np.array([X,Y,Z])
-      	    
+  
+  def calculate_jacobian(self,image1,image2):
+    a,b,c,d = self.detect_joint_angles(image1,image2)
+    jacobian = np.zeros((3,4))
+    
+    jacobian[0,0] = (-3*np.sin(a)*np.sin(c) + 3*np.sin(b)*np.cos(a)*np.cos(c))*np.cos(d) - 3.5*np.sin(a)*np.sin(c) + 3.5*np.sin(b)*np.cos(a)*np.cos(c) + 3*np.sin(d)*np.cos(a)*np.cos(b)
+    jacobian[0,1] =  -3*np.sin(a)*np.sin(b)*np.sin(d) + 3*np.sin(a)*np.cos(b)*np.cos(c)*np.cos(d) + 3.5*np.sin(a)*np.cos(b)*np.cos(c)
+    jacobian[0,2] =  (-3*np.sin(a)*np.sin(b)*np.sin(c) + 3*np.cos(a)*np.cos(c))*np.cos(d) - 3.5*np.sin(a)*np.sin(b)*np.sin(c) + 3.5*np.cos(a)*np.cos(c)
+    jacobian[0,3] =  -(3*np.sin(a)*np.sin(b)*np.cos(c) + 3*np.sin(c)*np.cos(a))*np.sin(d) + 3*np.sin(a)*np.cos(b)*np.cos(d)
+      
+    jacobian[1,0] = (3*np.sin(a)*np.sin(b)*np.cos(c) + 3*np.sin(c)*np.cos(a))*np.cos(d) + 3.5*np.sin(a)*np.sin(b)*np.cos(c) + 3*np.sin(a)*np.sin(d)*np.cos(b) + 3.5*np.sin(c)*np.cos(a)  
+    jacobian[1,1] = 3*np.sin(b)*np.sin(d)*np.cos(a) - 3*np.cos(a)*np.cos(b)*np.cos(c)*np.cos(d) - 3.5*np.cos(a)*np.cos(b)*np.cos(c)
+    jacobian[1,2] =  (3*np.sin(a)*np.cos(c) + 3*np.sin(b)*np.sin(c)*np.cos(a))*np.cos(d) + 3.5*np.sin(a)*np.cos(c) + 3.5*np.sin(b)*np.sin(c)*np.cos(a)
+    jacobian[1,3] =  -(3*np.sin(a)*np.sin(c) - 3*np.sin(b)*np.cos(a)*np.cos(c))*np.sin(d) - 3*np.cos(a)*np.cos(b)*np.cos(d)  
+  
+    jacobian[2,0] = 0
+    jacobian[2,1] =  -3*np.sin(b)*np.cos(c)*np.cos(d) - 3.5*np.sin(b)*np.cos(c) - 3*np.sin(d)*np.cos(b)
+    jacobian[2,2] =  -3*np.sin(c)*np.cos(b)*np.cos(d) - 3.5*np.sin(c)*np.cos(b)
+    jacobian[2,3] =  -3*np.sin(b)*np.cos(d) - 3*np.sin(d)*np.cos(b)*np.cos(c)
+    
+    return jacobian
+        
+  def control_closed(self,image1,image2):
+    # P gain
+    K_p = np.array([[10,0,0],[0,10,0],[0,0,10]])
+    # D gain
+    K_d = np.array([[0.1,0,0],[0,0.1,0],[0,0,0.1]])
+    # estimate time step
+    curr_time = np.array([rospy.get_time()])
+    dt = curr_time - self.time_previous_step
+    self.time_previous_step = curr_time
+    # robot end-effector position
+    pos = self.detect_end_effector(image1,image2)
+    # desired trajectory
+    pos_d = self.get_sphere_coords(image1,image2)
+    # estimate derivative of error
+    self.error_d = ((pos_d - pos) - self.error)/dt
+    # estimate error
+    self.error = pos_d-pos
+    q = self.detect_joint_angles(image1,image2) # estimate initial value of joints'
+    J_inv = np.linalg.pinv(self.calculate_jacobian(image1,image2))  # calculating the psudeo inverse of Jacobian
+    dq_d = np.dot(J_inv, ( np.dot(K_d,self.error_d.transpose()) + np.dot(K_p,self.error.transpose()) ) )  # control input (angular velocity of joints)
+    q_d = q + (dt * dq_d)  # control input (angular position of joints)
+    return q_d
+     	    
 # call the class
 def main(args):
   ic = image_converter()
