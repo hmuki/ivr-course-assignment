@@ -33,7 +33,7 @@ class image_converter:
     self.joint3_trajectory_pub = rospy.Publisher("joint3_trajectory",Float64, queue_size=10)
     self.joint4_trajectory_pub = rospy.Publisher("joint4_trajectory",Float64, queue_size=10)
     # initialize a publisher to send robot end-effector position
-    self.end_effector_pub = rospy.Publisher("end_effector",Float64MultiArray, queue_size=10)
+    self.end_effector_pub = rospy.Publisher("end_effector_pos",Float64MultiArray, queue_size=10)
     # initialize a publisher to send sphere position
     self.sphere_pub = rospy.Publisher("sphere_pos",Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
@@ -42,7 +42,7 @@ class image_converter:
     self.image_sub1 = message_filters.Subscriber("/camera1/robot/image_raw",Image)
     self.image_sub2 = message_filters.Subscriber("/camera2/robot/image_raw",Image)
     self.ts = message_filters.TimeSynchronizer([self.image_sub1, self.image_sub2], 10)
-    self.ts.registerCallback(self.callback5)
+    self.ts.registerCallback(self.callback2)
     self.initial_time = rospy.get_time()
     # initialize error
     self.time_previous_step = np.array([rospy.get_time()], dtype='float64')
@@ -119,7 +119,7 @@ class image_converter:
       self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
     except CvBridgeError as e:
       print(e)
-    sphere_coordinates = self.get_sphere_coords(self.cv_image1, self.cv_image2)
+    sphere_coordinates = self.get_sphere_coords_RBF(self.cv_image1, self.cv_image2)
     self.sphere = Float64MultiArray()
     self.sphere.data = sphere_coordinates
     try:
@@ -188,6 +188,10 @@ class image_converter:
     try:
       self.end_effector_pub.publish(self.end_effector)
       self.sphere_pub.publish(self.trajectory_desired)
+      self.robot_joint1_pub.publish(self.joint1)
+      self.robot_joint2_pub.publish(self.joint2)
+      self.robot_joint3_pub.publish(self.joint3)
+      self.robot_joint4_pub.publish(self.joint4)
     except CvBridgeError as e:
       print(e)
     
@@ -200,6 +204,8 @@ class image_converter:
     upper = (10, 255, 255)
     mask = cv2.inRange(image, lower, upper)
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if len(np.array(contours).ravel()) == 0:
+      return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
@@ -211,6 +217,8 @@ class image_converter:
     upper = (70, 255, 255)
     mask = cv2.inRange(image, lower, upper)
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if len(np.array(contours).ravel()) == 0:
+      return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
@@ -226,6 +234,8 @@ class image_converter:
     upper = (140, 255, 255)
     mask = cv2.inRange(image, lower, upper)
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if len(np.array(contours).ravel()) == 0:
+      return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
@@ -237,6 +247,8 @@ class image_converter:
     upper = (30, 255, 255)
     mask = cv2.inRange(image, lower, upper)
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if len(np.array(contours).ravel()) == 0:
+      return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
@@ -282,10 +294,15 @@ class image_converter:
     return np.array([center[0], center[1]])
     
   def get_3d_coords(self,list1,list2):
-    y = list1[0]
-    x = list2[0]
-    z = (list1[1] + list2[1])/2
-    return np.array([x, y, z])
+    if np.array_equal(np.zeros((1,2)), list1):
+      return np.array([list2[0], 0, list2[1]]) # (x,0,z)
+    elif np.array_equal(np.zeros((1,2)), list2):
+      return np.array([0, list1[0], list1[1]]) # (0,y,z)
+    else:
+      y = list1[0]
+      x = list2[0]
+      z = (list1[1] + list2[1])/2
+      return np.array([x, y, z])
 
   def pixel2meter(self,image1,image2):
     yellowPos = self.get_3d_coords(self.detect_yellow(image1), self.detect_yellow(image2))
@@ -313,6 +330,25 @@ class image_converter:
     bluePos = self.detect_blue(img)
     greenPos = self.detect_green(img)
     redPos = self.detect_red(img)
+    # handler if image of blue is not visible
+    if np.array_equal(np.zeros((1,2)), bluePos):
+      if num == 1:
+        bluePos = np.array([0, (self.detect_blue(image2))[1]])
+      elif num == 2:
+        bluePos = np.array([0, (self.detect_blue(image1))[1]])
+    # ... for green   
+    if np.array_equal(np.zeros((1,2)), greenPos):
+      if num == 1:
+        greenPos = np.array([0, (self.detect_green(image2))[1]])
+      elif num == 2:
+        greenPos = np.array([0, (self.detect_green(image1))[1]])
+    # and red    
+    if np.array_equal(np.zeros((1,2)), redPos):
+      if num == 1:
+        redPos = np.array([0, (self.detect_red(image2))[1]])
+      elif num == 2:
+        redPos = np.array([0, (self.detect_red(image1))[1]])
+    # get vectors     
     blueVec = a1 * np.array([bluePos[0]-center[0], center[1]-bluePos[1]])
     diff = a2 * np.array([greenPos[0] - bluePos[0], bluePos[1] - greenPos[1]])
     greenVec = diff + blueVec
@@ -385,8 +421,6 @@ class image_converter:
   def get_sphere_coords(self,image1,image2):
     a = self.pixel2meter2(image1,image2)
     yellowPos = self.get_3d_coords(self.detect_yellow(image1), self.detect_yellow(image2))
-    if np.array_equal(np.array([0,0]), self.detect_sphere(image1)) or np.array_equal(np.array([0,0]), self.detect_sphere(image2)): # if sphere can't be detected in one of the images
-      return np.array([0,0,0])
     spherePos = self.get_3d_coords(self.detect_sphere(image1), self.detect_sphere(image2))
     X = spherePos[0] - yellowPos[0]
     Y = spherePos[1] - yellowPos[1]
@@ -416,9 +450,9 @@ class image_converter:
         
   def control_closed(self,image1,image2):
     # P gain
-    K_p = np.array([[10,0,0],[0,10,0],[0,0,10]])
+    K_p = np.array([[18,0,0],[0,18,0],[0,0,18]])
     # D gain
-    K_d = np.array([[0.1,0,0],[0,0.1,0],[0,0,0.1]])
+    K_d = np.array([[0.2,0,0],[0,0.2,0],[0,0,0.2]])
     # estimate time step
     curr_time = np.array([rospy.get_time()])
     dt = curr_time - self.time_previous_step
