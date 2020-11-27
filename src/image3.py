@@ -132,7 +132,7 @@ class image_converter:
     res_elts = []
     min_locs = []
 
-    angles = np.arange(-90,91,10) # 10 degree increments
+    angles = np.arange(-90,91,5) # 5 degree increments
     for angle in angles:
       if num == 1:
         rotatedTemplate = cv2.inRange(self.rotate_image(self.link1, angle), (0), (10))

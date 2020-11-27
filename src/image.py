@@ -42,7 +42,7 @@ class image_converter:
     self.image_sub1 = message_filters.Subscriber("/camera1/robot/image_raw",Image)
     self.image_sub2 = message_filters.Subscriber("/camera2/robot/image_raw",Image)
     self.ts = message_filters.TimeSynchronizer([self.image_sub1, self.image_sub2], 10)
-    self.ts.registerCallback(self.callback2)
+    self.ts.registerCallback(self.callback3)
     self.initial_time = rospy.get_time()
     # initialize error
     self.time_previous_step = np.array([rospy.get_time()], dtype='float64')
@@ -208,6 +208,8 @@ class image_converter:
       return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
+    if M["m00"] == 0:
+      return np.zeros((1,2))
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
     return np.array([center[0], center[1]])
     
@@ -221,6 +223,8 @@ class image_converter:
       return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
+    if M["m00"] == 0:
+      return np.zeros((1,2))
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
     #canvas = image.copy()
     #cv2.circle(canvas, center, 2, (0, 0, 255), -1)
@@ -238,6 +242,8 @@ class image_converter:
       return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
+    if M["m00"] == 0:
+      return np.zeros((1,2))
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
     return np.array([center[0], center[1]])
     
@@ -251,6 +257,8 @@ class image_converter:
       return np.zeros((1,2))
     blob = max(contours, key=lambda el: cv2.contourArea(el))
     M = cv2.moments(blob)
+    if M["m00"] == 0:
+      return np.zeros((1,2))
     center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
     return np.array([center[0], center[1]])
     
