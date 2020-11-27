@@ -39,7 +39,7 @@ class image_converter:
     self.image_sub1 = message_filters.Subscriber("/camera1/robot/image_raw",Image)
     self.image_sub2 = message_filters.Subscriber("/camera2/robot/image_raw",Image)
     self.ts = message_filters.TimeSynchronizer([self.image_sub1, self.image_sub2], 10)
-    self.ts.registerCallback(self.callback)
+    self.ts.registerCallback(self.callback2)
     self.initial_time = rospy.get_time()
   
   def get_joint_trajectories(self):
@@ -100,6 +100,11 @@ class image_converter:
       self.cv_image2 = self.bridge.imgmsg_to_cv2(image2, "bgr8")
     except CvBridgeError as e:
       print(e)
+    self.link1 = cv2.imread('link1.png',0)
+    self.link2 = cv2.imread('link2.png',0)
+    self.link3 = cv2.imread('link3.png',0)  
+    self.cv_image1 = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2GRAY) # convert to grayscale
+    self.cv_image2 = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2GRAY) # convert to grayscale  
     # publish robot joint angles
     self.joints = Float64MultiArray()
     self.joints.data = self.detect_joint_angles(self.cv_image1, self.cv_image2)
@@ -127,7 +132,7 @@ class image_converter:
     res_elts = []
     min_locs = []
 
-    angles = np.arange(-90,91,5) # 5 degree increments
+    angles = np.arange(-90,91,10) # 10 degree increments
     for angle in angles:
       if num == 1:
         rotatedTemplate = cv2.inRange(self.rotate_image(self.link1, angle), (0), (10))
@@ -172,18 +177,18 @@ class image_converter:
       z = (list1[1] + list2[1])/2
       return np.array([x, y, z])
   
-  def pixel2meter(self,image1,image2):
-    bottomPos = self.get_3d_coords(self.detect_link1(image1), self.detect_link1(image2))
-    middlePos = self.get_3d_coords(self.detect_link2(image1), self.detect_link2(image2))
+  def pixel2meter(self):
+    bottomPos = self.get_3d_coords(self.L11, self.L12)
+    middlePos = self.get_3d_coords(self.L21, self.L22)
     dist = np.sqrt(np.sum((bottomPos - middlePos)**2))
     return 3.5/dist
    
   # get 2d coordinates relative to sphere 1
-  def get_2d_coords(self,image1,image2):
-    a = self.pixel2meter(image1,image2)
-    bottomPos = self.get_3d_coords(self.detect_link1(image1), self.detect_link1(image2))
-    middlePos = self.get_3d_coords(self.detect_link2(image1), self.detect_link2(image2))
-    topPos = self.get_3d_coords(self.detect_link3(image1), self.detect_link3(image2))
+  def get_coords(self):
+    a = self.pixel2meter()
+    bottomPos = self.get_3d_coords(self.L11, self.L12)
+    middlePos = self.get_3d_coords(self.L21, self.L22)
+    topPos = self.get_3d_coords(self.L31, self.L32)
     Xm = middlePos[0] - bottomPos[0]   
     Ym = middlePos[1] - bottomPos[1]
     Zm = bottomPos[2] - middlePos[2]
@@ -194,28 +199,25 @@ class image_converter:
     topVec = a * np.array([Xt,Yt,Zt])
     return middleVec, topVec 
   
-  def get_joint_2(self,image1,image2):
-    middle1, _ = self.get_2d_coords(image1, image2)
-    middle2, _ = self.get_2d_coords(image1, image2)
-    _, Y, Z = self.get_3d_coords(middle1, middle2)
+  def get_joint_2(self):
+    middle, _ = self.get_coords()
+    _, Y, Z = middle
     return np.arctan2(-Y, Z)
   
-  def get_joint_3(self,image1,image2):
-    middle1, _ = self.get_2d_coords(image1, image2)
-    middle2, _ = self.get_2d_coords(image1, image2)
-    Xm, _, _ = self.get_3d_coords(middle1, middle2)
+  def get_joint_3(self):
+    middle, _ = self.get_coords()
+    X, _, _ = middle 
     return np.arcsin((X/3.5))
     
-  def get_joint_4(self,image1,image2):
-    beta = self.get_joint_2(image1,image2)
-    gamma = self.get_joint_3(image1,image2)
+  def get_joint_4(self):
+    beta = self.get_joint_2()
+    gamma = self.get_joint_3()
     a1 = -3*np.sin(beta)*np.cos(gamma)
     a2 = -3*np.cos(beta)
     b1 = 3*np.cos(beta)*np.cos(gamma)
     b2 = -3*np.sin(beta)
-    _, top1 = self.get_2d_coords(image1, image2)
-    _, top2 = self.get_2d_coords(image1, image2)
-    _, Yt, Zt = self.get_3d_coords(top1, top2)
+    _, top = self.get_coords()
+    _, Yt, Zt = top
     c1 = Yt + 3.5*np.sin(beta)*np.cos(gamma)
     c2 = Zt - 3.5*np.cos(beta)*np.cos(gamma)
     A = np.array([[a1,a2],[b1,b2]])
@@ -226,10 +228,16 @@ class image_converter:
     return np.arctan2(x[1],x[0])
 
   def detect_joint_angles(self,image1,image2):
+    self.L11 = self.detect_link1(image1)
+    self.L12 = self.detect_link1(image2)
+    self.L21 = self.detect_link2(image1)
+    self.L22 = self.detect_link2(image2)
+    self.L31 = self.detect_link3(image1)
+    self.L32 = self.detect_link3(image2)
     joint1 = 0
-    joint2 = self.get_joint_2(image1,image2)
-    joint3 = self.get_joint_3(image1,image2)
-    joint4 = self.get_joint_4(image1,image2)
+    joint2 = self.get_joint_2()
+    joint3 = self.get_joint_3()
+    joint4 = self.get_joint_4()
     return np.array([joint1, joint2, joint3, joint4])
     	  
 # call the class
