@@ -12,6 +12,9 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64MultiArray, Float64
 from cv_bridge import CvBridge, CvBridgeError
 
+# This class is for detecting the joint angles of
+# the robot with black links and joints (Question 4.3)
+
 class image_converter:
 
   # Defines publisher and subscriber
